@@ -21,25 +21,25 @@ class ReplayBuffer:
     def __len__(self):
         return len(self.buffer)
 
-    def add(self, state, action, reward, next_state, done):
-        self.buffer.append((state, action, reward, next_state, done))
+    def add(self, state, action, next_state, reward, done):
+        self.buffer.append((state, action, next_state, reward, done))
 
     def get_batch(self):
         data = random.sample(self.buffer, self.batch_size)
 
         state = np.stack([x[0] for x in data])
         action = np.array([x[1] for x in data])
-        reward = np.array([x[2] for x in data])
-        next_state = np.stack([x[3] for x in data])
+        next_state = np.stack([x[2] for x in data])
+        reward = np.array([x[3] for x in data])
         done = np.array([x[4] for x in data])
 
         state = torch.tensor(state, dtype=torch.float32)
         action = torch.tensor(action, dtype=torch.long)
-        reward = torch.tensor(reward, dtype=torch.float32)
         next_state = torch.tensor(next_state, dtype=torch.float32)
+        reward = torch.tensor(reward, dtype=torch.float32)
         done = torch.tensor(done, dtype=torch.long)
 
-        return state, action, reward, next_state, done
+        return state, action, next_state, reward, done
 
 
 class QNet(nn.Module):
@@ -90,12 +90,12 @@ class DqnAgent:
                 action_q_values = self.QNet(state)
                 return torch.argmax(action_q_values).item()
 
-    def update_QNet(self, state, action, reward, next_state, done):
-        self.replay_buffer.add(state, action, reward, next_state, done)
+    def update_QNet(self, state, action, next_state, reward, done):
+        self.replay_buffer.add(state, action, next_state, reward, done)
         if len(self.replay_buffer) < self.replay_buffer.batch_size:
             return
 
-        state, action, reward, next_state, done = self.replay_buffer.get_batch()
+        state, action, next_state, reward, done = self.replay_buffer.get_batch()
 
         q_values = self.QNet(state)
         q_pred = q_values.gather(1, action.unsqueeze(1)).squeeze(1)
@@ -130,7 +130,7 @@ def run_episodes(agent:DqnAgent, num_episodes):
             next_state, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
 
-            loss = agent.update_QNet(state, action, reward, next_state, done)
+            loss = agent.update_QNet(state, action, next_state, reward, done)
 
             if loss is not None:
                 total_loss += loss
