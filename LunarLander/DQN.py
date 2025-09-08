@@ -107,7 +107,7 @@ class DqnAgent:
 
         states, actions, next_states, rewards, dones = self.replay_buffer.get_batch()
 
-        # q_preds = Q(states, actions)
+        # q_preds = Q(s, a)
         q_values = self.qnet(states)
         q_preds = q_values.gather(1, actions.unsqueeze(1)).squeeze(1)
 
