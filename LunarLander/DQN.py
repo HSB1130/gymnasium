@@ -1,4 +1,5 @@
 import random
+from datetime import datetime
 from collections import deque
 import numpy as np
 import gymnasium as gym
@@ -63,7 +64,7 @@ class DqnAgent:
         observation_size,
         action_size,
         batch_size=128,
-        lr=1e-3,
+        lr=5e-4,
         gamma=0.99,
         buffer_size=10000,
         tau=1e-3
@@ -137,7 +138,7 @@ def train_qnet(agent: DqnAgent, num_episodes, update_qnet_step=5, target_reward=
         total_reward = 0
         episode_step = 0
 
-        while not done:
+        while not done and episode_step<=1500:
             action = agent.get_action_from_qnet(state)
             next_state, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
@@ -157,16 +158,31 @@ def train_qnet(agent: DqnAgent, num_episodes, update_qnet_step=5, target_reward=
         reward_history.append(total_reward)
 
         if episode%100 == 0:
-            recent_reward = np.mean(reward_history[-100:])
+            recent_reward = np.mean(reward_history[-20:])
             print(f'Episode : {episode}   Recent Reward : {recent_reward}')
 
             # early stopping
             if recent_reward>=target_reward:
-                print('Target Reward reached.!!')
+                print('Target reward achieved!!')
                 break
 
 
+def save_qnet_params(agent: DqnAgent):
+    is_save = str(input('Do you want to save this Qnet parameters? [Yes/No] : '))
+    if is_save.strip().lower() == 'yes':
+        now = datetime.now()
+        datetime_str = now.strftime("%Y-%m-%d_%H:%M:%S")
+        state_dict_saved_path = f'./model/dqn_qnet_state_dict_{datetime_str}.pt'
+
+        torch.save(agent.qnet.state_dict(), state_dict_saved_path)
+        print('Model state dict saved!!')
+    else:
+        print('Model doesn\'t saved!!')
+
+
 def render_agent(agent: DqnAgent, num_episodes):
+    _ = str(input('Press ENTER to start rendering : '))
+
     for episode in range(1, num_episodes+1):
         tmp_env = gym.make(
             'LunarLander-v3',
@@ -195,6 +211,8 @@ def render_agent(agent: DqnAgent, num_episodes):
 
         print(f'Reward : {total_reward}')
 
+    save_qnet_params(agent)
+
 
 if __name__=='__main__':
     agent = DqnAgent(
@@ -202,5 +220,5 @@ if __name__=='__main__':
         action_size=env.action_space.n
     )
 
-    train_qnet(agent, num_episodes=5000)
+    train_qnet(agent, num_episodes=10000)
     render_agent(agent, num_episodes=10)
