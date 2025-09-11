@@ -8,7 +8,6 @@ from torch.distributions.categorical import Categorical
 
 env = gym.make(
     'LunarLander-v3',
-    # render_mode='human'
     render_mode=None
 )
 
@@ -43,16 +42,17 @@ class ValueNet(nn.Module):
         return self.FC(state)
 
 
-class Agent:
-    def __init__(self, observation_size, action_size, lr):
+class AcAgent:
+    def __init__(self, observation_size, action_size, lr=1e-3):
         self.gamma = 0.99
-        self.lr = lr
+        self.lr_policy = lr
+        self.lr_value = lr
 
         self.policy_net = PolicyNet(observation_size, action_size)
-        self.optimizer_policy = optim.Adam(params=self.policy_net.parameters(), lr=self.lr)
+        self.optimizer_policy = optim.Adam(params=self.policy_net.parameters(), lr=self.lr_policy)
 
         self.value_net = ValueNet(observation_size)
-        self.optimizer_value = optim.Adam(params=self.value_net.parameters(), lr=self.lr)
+        self.optimizer_value = optim.Adam(params=self.value_net.parameters(), lr=self.lr_value)
 
     def get_action_from_policy_net(self, state):
         state = torch.tensor(state, dtype=torch.float32)
@@ -69,7 +69,7 @@ class Agent:
         reward = torch.tensor(reward, dtype=torch.float32)
         done = torch.tensor(done, dtype=torch.long)
 
-        # Value Net : [r+gama*V(s')-V(s)]
+        # Value Net : loss = [r+gama*V(s')-V(s)]^2
         pred_value = self.value_net(state)
 
         with torch.no_grad():
@@ -80,7 +80,7 @@ class Agent:
 
         loss_value = nn.functional.mse_loss(pred_value, target_value)
 
-        # Policy Net : [(r+gama*V(s')-V(s)) * log pi(a|s)]
+        # Policy Net : loss = -[{r+gamma*V(s')-V(s)} * log pi(a|s)]
         delta_v = target_value - pred_value
         delta_v = delta_v.detach()
 
@@ -97,7 +97,7 @@ class Agent:
         self.optimizer_policy.step()
 
 
-def train_policy_net(agent: Agent, num_episodes, target_reward=230):
+def train_agent(agent: AcAgent, num_episodes, target_reward=240):
     reward_history = []
 
     for episode in tqdm(range(1, num_episodes+1)):
@@ -122,12 +122,13 @@ def train_policy_net(agent: Agent, num_episodes, target_reward=230):
             recent_reward = np.mean(reward_history[-50:])
             print(f'Episode : {episode}   Recent reward : {recent_reward}')
 
+            # Early Stopping
             if recent_reward>=target_reward:
                 print('Target reward achieved!!')
                 break
 
 
-def save_policy_net_params(agent: Agent):
+def save_policy_net_params(agent: AcAgent):
     is_save = str(input('Do you want to save this Policy Net parameters? [Yes/No] : '))
     if is_save.strip().lower() == 'yes':
         now = datetime.now()
@@ -140,7 +141,7 @@ def save_policy_net_params(agent: Agent):
         print('Model doesn\'t saved!!')
 
 
-def render_agent(agent: Agent, num_episodes):
+def render_agent(agent: AcAgent, num_episodes):
     _ = str(input('Press ENTER to start rendering : '))
 
     for episode in range(1, num_episodes+1):
@@ -171,11 +172,11 @@ def render_agent(agent: Agent, num_episodes):
 
 
 if __name__=='__main__':
-    agent = Agent(
+    agent = AcAgent(
         observation_size=env.observation_space.shape[0],
         action_size=env.action_space.n,
         lr=1e-3
     )
 
-    train_policy_net(agent, num_episodes=5000)
+    train_agent(agent, num_episodes=5000)
     render_agent(agent, num_episodes=10)

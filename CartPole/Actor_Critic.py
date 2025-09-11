@@ -62,7 +62,7 @@ class Agent:
         chosen_action_log_prob = distribution.log_prob(chosen_action)
         return chosen_action.item(), chosen_action_log_prob
 
-    def update_V_Policy(self, state, action_log_prob, reward, next_state, done):
+    def update_value_policy_net(self, state, action_log_prob, reward, next_state, done):
         state = torch.tensor(state, dtype=torch.float32)
         reward = torch.tensor(reward, dtype=torch.float32)
         next_state = torch.tensor(next_state, dtype=torch.float32)
@@ -87,7 +87,7 @@ class Agent:
         self.optimizer_policy.step()
 
 
-def run_episodes(agent:Agent, num_episodes):
+def train_agent(agent:Agent, num_episodes):
     reward_history = []
 
     for episode in range(1, num_episodes+1):
@@ -100,7 +100,7 @@ def run_episodes(agent:Agent, num_episodes):
             done = terminated or truncated
 
             total_rewards += reward
-            agent.update_V_Policy(state, action_log_prob, reward, next_state, done)
+            agent.update_value_policy_net(state, action_log_prob, reward, next_state, done)
 
             if done:
                 break
@@ -148,5 +148,5 @@ if __name__=='__main__':
         action_size=env.action_space.n
     )
 
-    run_episodes(agent, num_episodes=3000)
+    train_agent(agent, num_episodes=3000)
     render_agent(agent, num_episodes=10)

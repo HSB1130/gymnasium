@@ -8,7 +8,6 @@ from torch import nn, optim
 
 env = gym.make(
     'LunarLander-v3',
-    # render_mode='human'
     render_mode=None
 )
 
