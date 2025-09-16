@@ -1,20 +1,19 @@
 import numpy as np
 from tqdm import tqdm
-from datetime import datetime
 import gymnasium as gym
 import torch
 from torch import nn, optim
 from torch.distributions.categorical import Categorical
 
 env = gym.make(
-    'LunarLander-v3',
+    id="Acrobot-v1",
     render_mode=None
 )
 
-
 class PolicyNet(nn.Module):
-    def __init__(self, observation_size, action_size, hidden_size=64):
+    def __init__(self, observation_size=6, action_size=3, hidden_size=32):
         super().__init__()
+
         self.FC = nn.Sequential(
             nn.Linear(observation_size, hidden_size),
             nn.ReLU(),
@@ -28,8 +27,9 @@ class PolicyNet(nn.Module):
 
 
 class ValueNet(nn.Module):
-    def __init__(self, observation_size, hidden_size=64):
+    def __init__(self, observation_size=6, hidden_size=32):
         super().__init__()
+
         self.FC = nn.Sequential(
             nn.Linear(observation_size, hidden_size),
             nn.ReLU(),
@@ -43,18 +43,19 @@ class ValueNet(nn.Module):
 
 
 class AcAgent:
-    def __init__(self, observation_size, action_size, lr=1e-3):
+    def __init__(self, observation_size=6, action_size=3, lr=1e-4):
         self.gamma = 0.99
-        self.lr_policy = lr
-        self.lr_value = lr
+        self.observation_size = observation_size
+        self.action_size = action_size
+        self.lr = lr
 
-        self.policy_net = PolicyNet(observation_size, action_size)
-        self.optimizer_policy = optim.Adam(params=self.policy_net.parameters(), lr=self.lr_policy)
+        self.policy_net = PolicyNet(self.observation_size, self.action_size)
+        self.optimizer_policy = optim.Adam(params=self.policy_net.parameters(), lr=self.lr)
 
-        self.value_net = ValueNet(observation_size)
-        self.optimizer_value = optim.Adam(params=self.value_net.parameters(), lr=self.lr_value)
+        self.value_net = ValueNet(self.observation_size)
+        self.optimizer_value = optim.Adam(params=self.value_net.parameters(), lr=self.lr)
 
-    def get_action_log_prob_from_policy_net(self, state):
+    def get_action_log_prob(self, state):
         state = torch.tensor(state, dtype=torch.float32)
         logits = self.policy_net(state)
         distribution = Categorical(logits=logits)
@@ -62,19 +63,20 @@ class AcAgent:
         chosen_action_log_prob = distribution.log_prob(chosen_action)
         return chosen_action.item(), chosen_action_log_prob
 
-    def get_action_by_determistic(self, state):
+    def get_action_determistic(self, state):
         state = torch.tensor(state, dtype=torch.float32)
         logits = self.policy_net(state)
-        chosen_action = torch.argmax(logits)
-        return chosen_action.item()
+        choesen_action = torch.argmax(logits)
+        return choesen_action.item()
 
     def update_policy_value_net(self, state, action_log_prob, next_state, reward, done):
         state = torch.tensor(state, dtype=torch.float32)
+        # action_log_prob = torch.tensor(action_log_prob, dtype=torch.float32)
         next_state = torch.tensor(next_state, dtype=torch.float32)
         reward = torch.tensor(reward, dtype=torch.float32)
         done = torch.tensor(done, dtype=torch.long)
 
-        # Value Net : loss = [r+gama*Vw(s')-Vw(s)]^2
+        # ValueNet : Loss = [{r+gamma*Vw(s')} - Vw(s)]^2
         pred_state_value = self.value_net(state)
 
         with torch.no_grad():
@@ -83,105 +85,82 @@ class AcAgent:
         target_state_value = reward + (1-done)*self.gamma*next_state_value
         target_state_value = target_state_value.detach()
 
-        loss_value = nn.functional.mse_loss(pred_state_value, target_state_value)
+        loss_value_net = nn.functional.mse_loss(pred_state_value, target_state_value)
 
-        # Policy Net : loss = -[{r+gamma*Vw(s')-Vw(s)} * log pi_theta(a|s)]
-        delta_v = target_state_value - pred_state_value
-        delta_v = delta_v.detach()
+        # PolicyNet : Loss = -[{r+gamma*Vw(s')}-Vw(s)] * log(pi_theta(a|s))
+        delta = target_state_value - pred_state_value
+        delta = delta.detach()
+        loss_policy_net = -delta*action_log_prob
 
-        loss_policy = -delta_v*action_log_prob
-
-        # Update value_net, policy_net
+        # Update Neural Net
         self.optimizer_value.zero_grad()
         self.optimizer_policy.zero_grad()
 
-        loss_value.backward()
-        loss_policy.backward()
+        loss_value_net.backward()
+        loss_policy_net.backward()
 
         self.optimizer_value.step()
         self.optimizer_policy.step()
 
 
-def train_agent(agent: AcAgent, num_episodes, target_reward=240):
+def train_agent(agent: AcAgent, num_episodes):
     reward_history = []
 
     for episode in tqdm(range(1, num_episodes+1)):
         state, info = env.reset()
         done = False
 
-        total_reward = 0
+        total_reward = 0.0
 
         while not done:
-            action, action_log_prob = agent.get_action_log_prob_from_policy_net(state)
+            action, action_log_prob = agent.get_action_log_prob(state)
             next_state, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
 
             agent.update_policy_value_net(state, action_log_prob, next_state, reward, done)
-
             total_reward += reward
+
             state = next_state
 
         reward_history.append(total_reward)
 
-        if episode%50 == 0:
+        if episode%50==0:
             recent_reward = np.mean(reward_history[-50:])
-            print(f'Episode : {episode}   Recent reward : {recent_reward}')
+            print(f'Episode : {episode}   Recent_Reward : {recent_reward:.4f}')
 
-            # Early Stopping
-            if recent_reward>=target_reward:
-                print('Target reward achieved!!')
+            if recent_reward>=-85:
+                print('Early Stop!!')
                 break
 
 
-def save_policy_net_params(agent: AcAgent):
-    is_save = str(input('Do you want to save this Policy Net parameters? [Yes/No] : '))
-    if is_save.strip().lower() == 'yes':
-        now = datetime.now()
-        datetime_str = now.strftime("%Y-%m-%d_%H:%M:%S")
-        state_dict_saved_path = f'./model/actor_critic_policy_net_state_dict_{datetime_str}.pt'
-
-        torch.save(agent.policy_net.state_dict(), state_dict_saved_path)
-        print('Model state dict saved!!')
-    else:
-        print('Model doesn\'t saved!!')
-
-
-def render_agent(agent: AcAgent, num_episodes):
-    _ = str(input('Press ENTER to start rendering : '))
+def render_agent(agent: AcAgent, num_episodes=10):
+    render_env = gym.make(
+        id="Acrobot-v1",
+        render_mode='human'
+    )
 
     for episode in range(1, num_episodes+1):
-        tmp_env = gym.make(
-            'LunarLander-v3',
-            render_mode='human'
-        )
+        state, info = render_env.reset()
+        done = False
 
-        state, info = tmp_env.reset()
         total_reward = 0
 
-        while True:
-            action =  agent.get_action_by_determistic(state)
-            next_state, reward, terminated, truncated, info = tmp_env.step(action)
+        while not done:
+            action = agent.get_action_determistic(state)
+            next_state, reward, terminated, truncated, info = render_env.step(action)
             done = terminated or truncated
 
             total_reward += reward
-
-            if done:
-                tmp_env.close()
-                break
-
             state = next_state
 
-        print(f'Reward : {total_reward}')
-
-    save_policy_net_params(agent)
+        print(f'Episode {episode} : Reward {total_reward}')
 
 
 if __name__=='__main__':
     agent = AcAgent(
         observation_size=env.observation_space.shape[0],
-        action_size=env.action_space.n,
-        lr=1e-3
+        action_size=env.action_space.n
     )
 
-    train_agent(agent, num_episodes=5000)
-    render_agent(agent, num_episodes=10)
+    train_agent(agent, num_episodes=3000)
+    render_agent(agent, num_episodes=20)
