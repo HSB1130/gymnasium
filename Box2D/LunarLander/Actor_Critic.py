@@ -7,7 +7,7 @@ from torch import nn, optim
 from torch.distributions.categorical import Categorical
 
 env = gym.make(
-    'LunarLander-v3',
+    id='LunarLander-v3',
     render_mode=None
 )
 
@@ -54,22 +54,24 @@ class AcAgent:
         self.value_net = ValueNet(observation_size)
         self.optimizer_value = optim.Adam(params=self.value_net.parameters(), lr=self.lr_value)
 
-    def get_action_log_prob_from_policy_net(self, state):
+    def get_action_from_policy_net(self, state):
         state = torch.tensor(state, dtype=torch.float32)
-        logits = self.policy_net(state)
-        distribution = Categorical(logits=logits)
-        chosen_action = distribution.sample()
-        chosen_action_log_prob = distribution.log_prob(chosen_action)
-        return chosen_action.item(), chosen_action_log_prob
-
-    def get_action_by_determistic(self, state):
-        state = torch.tensor(state, dtype=torch.float32)
-        logits = self.policy_net(state)
-        chosen_action = torch.argmax(logits)
+        with torch.no_grad():
+            logits = self.policy_net(state)
+            distribution = Categorical(logits=logits)
+            chosen_action = distribution.sample()
         return chosen_action.item()
 
-    def update_policy_value_net(self, state, action_log_prob, next_state, reward, done):
+    def get_action_by_deterministic(self, state):
         state = torch.tensor(state, dtype=torch.float32)
+        with torch.no_grad():
+            logits = self.policy_net(state)
+            chosen_action = torch.argmax(logits)
+        return chosen_action.item()
+
+    def update_policy_value_net(self, state, action, next_state, reward, done):
+        state = torch.tensor(state, dtype=torch.float32)
+        action = torch.tensor(action, dtype=torch.long)
         next_state = torch.tensor(next_state, dtype=torch.float32)
         reward = torch.tensor(reward, dtype=torch.float32)
         done = torch.tensor(done, dtype=torch.long)
@@ -79,15 +81,18 @@ class AcAgent:
 
         with torch.no_grad():
             next_state_value = self.value_net(next_state)
+            target_state_value = reward + (1-done)*self.gamma*next_state_value
 
-        target_state_value = reward + (1-done)*self.gamma*next_state_value
         target_state_value = target_state_value.detach()
-
         loss_value = nn.functional.mse_loss(pred_state_value, target_state_value)
 
         # Policy Net : loss = -[{r+gamma*Vw(s')-Vw(s)} * log pi_theta(a|s)]
         delta_v = target_state_value - pred_state_value
         delta_v = delta_v.detach()
+
+        logits = self.policy_net(state)
+        distribution = Categorical(logits=logits)
+        action_log_prob = distribution.log_prob(action)
 
         loss_policy = -delta_v*action_log_prob
 
@@ -102,7 +107,7 @@ class AcAgent:
         self.optimizer_policy.step()
 
 
-def train_agent(agent: AcAgent, num_episodes, target_reward=240):
+def train_agent(agent: AcAgent, num_episodes):
     reward_history = []
 
     for episode in tqdm(range(1, num_episodes+1)):
@@ -112,25 +117,26 @@ def train_agent(agent: AcAgent, num_episodes, target_reward=240):
         total_reward = 0
 
         while not done:
-            action, action_log_prob = agent.get_action_log_prob_from_policy_net(state)
+            action = agent.get_action_from_policy_net(state)
             next_state, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
 
-            agent.update_policy_value_net(state, action_log_prob, next_state, reward, done)
+            agent.update_policy_value_net(state, action, next_state, reward, done)
 
             total_reward += reward
             state = next_state
 
         reward_history.append(total_reward)
+        recent_reward = np.mean(reward_history[-50:])
+
+        # Early Stopping
+        if recent_reward>=245:
+            print('Early Stopped!!')
+            print(f'Episode : {episode}   Recent reward : {recent_reward:.4f}')
+            break
 
         if episode%50 == 0:
-            recent_reward = np.mean(reward_history[-50:])
-            print(f'Episode : {episode}   Recent reward : {recent_reward}')
-
-            # Early Stopping
-            if recent_reward>=target_reward:
-                print('Target reward achieved!!')
-                break
+            print(f'Episode : {episode}   Recent reward : {recent_reward:.4f}')
 
 
 def save_policy_net_params(agent: AcAgent):
@@ -147,32 +153,31 @@ def save_policy_net_params(agent: AcAgent):
 
 
 def render_agent(agent: AcAgent, num_episodes):
+    render_env = gym.make(
+        id='LunarLander-v3',
+        render_mode='human'
+    )
+
     _ = str(input('Press ENTER to start rendering : '))
 
     for episode in range(1, num_episodes+1):
-        tmp_env = gym.make(
-            'LunarLander-v3',
-            render_mode='human'
-        )
+        state, info = render_env.reset()
+        done = False
 
-        state, info = tmp_env.reset()
-        total_reward = 0
+        total_reward = 0.0
 
-        while True:
-            action =  agent.get_action_by_determistic(state)
-            next_state, reward, terminated, truncated, info = tmp_env.step(action)
+        while not done:
+            action =  agent.get_action_by_deterministic(state)
+            next_state, reward, terminated, truncated, info = render_env.step(action)
             done = terminated or truncated
 
             total_reward += reward
 
-            if done:
-                tmp_env.close()
-                break
-
             state = next_state
 
-        print(f'Reward : {total_reward}')
+        print(f'Episode : {episode}  Reward : {total_reward:.4f}')
 
+    render_env.close()
     save_policy_net_params(agent)
 
 

@@ -1,0 +1,218 @@
+from tqdm import tqdm
+import numpy as np
+import gymnasium as gym
+import torch
+from torch import nn, optim
+from torch.utils.data import TensorDataset, DataLoader
+from torch.distributions.categorical import Categorical
+
+
+env = gym.make(
+    id='LunarLander-v3',
+    render_mode=None
+)
+
+
+class RolloutBuffer:
+    def __init__(self):
+        self.buffer = []
+
+    def __len__(self):
+        return len(self.buffer)
+
+    def save(self, trajactory):
+        self.buffer.append(trajactory)
+
+    def sample(self):
+        states, actions, action_log_probs, next_states, rewards, dones = map(torch.stack, zip(*self.buffer))
+        rewards = rewards.unsqueeze(dim=1)
+        dones = dones.unsqueeze(dim=1)
+        self.buffer.clear()
+        return states, actions, action_log_probs, next_states, rewards, dones
+
+
+class PolicyNet(nn.Module):
+    def __init__(self, observation_size, action_size, hidden_size=64):
+        super().__init__()
+
+        self.FC = nn.Sequential(
+            nn.Linear(observation_size, hidden_size),
+            nn.Tanh(),
+            nn.Linear(hidden_size, hidden_size),
+            nn.Tanh(),
+            nn.Linear(hidden_size, action_size)
+        )
+
+    def forward(self, state):
+        return  self.FC(state)
+
+
+class ValueNet(nn.Module):
+    def __init__(self, observation_size, hidden_size=64):
+        super().__init__()
+
+        self.FC = nn.Sequential(
+            nn.Linear(observation_size, hidden_size),
+            nn.Tanh(),
+            nn.Linear(hidden_size, hidden_size),
+            nn.Tanh(),
+            nn.Linear(hidden_size, 1)
+        )
+
+    def forward(self, state):
+       return self.FC(state)
+
+
+class PpoAgent:
+    def __init__(self, observation_size, action_size, n_steps, n_epochs, batch_size, lr, gae_lmda, clip_ratio, vf_coef, entropy_coef):
+        self.observation_size = observation_size
+        self.action_size = action_size
+
+        self.n_steps = n_steps
+        self.n_epochs = n_epochs
+        self.batch_size = batch_size
+
+        self.gamma = 0.99
+        self.lr = lr
+
+        self.gae_lmda = gae_lmda
+        self.clip_ratio = clip_ratio
+        self.vf_coef = vf_coef
+        self.entropy_coef = entropy_coef
+
+        self.buffer = RolloutBuffer()
+
+        self.policy_net = PolicyNet(self.observation_size, self.action_size)
+        self.optimizer_policy_net = optim.Adam(params=self.policy_net.parameters(), lr=self.lr)
+
+        self.value_net = ValueNet(self.observation_size)
+        self.optimizer_value_net = optim.Adam(params=self.value_net.parameters(), lr=self.lr)
+
+    def add_buffer(self, state, action, action_log_prob, next_state, reward, done):
+        state = torch.tensor(state, dtype=torch.float32)
+        action = torch.tensor(action, dtype=torch.long)
+        next_state = torch.tensor(next_state, dtype=torch.float32)
+        reward = torch.tensor(reward, dtype=torch.float32)
+        done = torch.tensor(done, dtype=torch.long)
+
+        trajactory = (state, action, action_log_prob, next_state, reward, done)
+        self.buffer.save(trajactory)
+
+    def get_action_deterministic(self, state):
+        state = torch.tensor(state, dtype=torch.float32)
+        with torch.no_grad():
+            logits = self.policy_net(state)
+        max_prob_action = torch.argmax(logits)
+        return max_prob_action.detach().numpy()
+
+    def get_action_log_prob(self, state):
+        state = torch.tensor(state, dtype=torch.float32)
+        logits = self.policy_net(state)
+        distribution = Categorical(logits=logits)
+        chosen_action = distribution.sample()
+        chosen_action_log_prob = distribution.log_prob(chosen_action)
+        return chosen_action.detach().numpy(), chosen_action_log_prob
+
+    def update_policy_value_net(self):
+        states, actions, old_action_log_probs, next_states, rewards, dones = self.buffer.sample()
+
+        # GAE
+        with torch.no_grad():
+            state_value = self.value_net(states)
+            next_state_value = self.value_net(next_states)
+
+            # deltas   = {Rt + gamma*Vw(St+1)} - Vw(St)
+            # returns = Q(s, a) = Advantage + V(s)
+            deltas = rewards + (1-dones)*self.gamma*next_state_value - state_value
+
+            advantages = torch.zeros_like(rewards)
+            last_advantage = 0.0
+
+            for t in reversed(range(len(rewards))):
+                last_advantage = deltas[t] + (1-dones[t])*self.gamma*self.gae_lmda*last_advantage
+                advantages[t] += last_advantage
+
+            returns = advantages + state_value
+
+        # PPO update
+        dataset = TensorDataset(states, actions, old_action_log_probs, returns, advantages)
+        dataloader = DataLoader(dataset=dataset, batch_size=self.batch_size, shuffle=True, drop_last=True)
+
+        for epoch in range(1, self.n_epochs+1):
+            for batch in dataloader:
+                states_, actions_, old_action_log_probs_, returns_, advantages_ = batch
+
+                # ValueNet Loss
+                pred_values = self.value_net(states_)
+                value_loss = nn.functional.mse_loss(pred_values, returns_)
+
+                # PolciyNet Loss
+                logits = self.policy_net(states_)
+                distributions = Categorical(logits=logits)
+                chosen_action_log_probs = distributions.log_prob(actions_)
+
+                ratio = torch.exp(chosen_action_log_probs - old_action_log_probs_)
+                surrogate_1 = advantages_*ratio
+                surrogate_2 = advantages_*torch.clamp(ratio, 1-self.clip_ratio, 1+self.clip_ratio)
+                policy_loss = -torch.min(surrogate_1, surrogate_2).mean()
+
+                # Entropy
+                entropy = distributions.entropy().mean()
+
+                # Total Loss
+                total_loss = policy_loss + self.vf_coef*value_loss - self.entropy_coef*entropy
+
+                self.optimizer_value_net.zero_grad()
+                self.optimizer_policy_net.zero_grad()
+
+                total_loss.backward()
+
+                self.optimizer_value_net.step()
+                self.optimizer_policy_net.step()
+
+
+def train_agent(agent: PpoAgent, num_episodes):
+    reward_history = []
+
+    for episode in tqdm(range(1, num_episodes+1)):
+        state, info = env.reset()
+        done = False
+
+        total_reward = 0.0
+
+        while not done:
+            action, action_log_prob = agent.get_action_log_prob(state)
+            next_state, reward, terminated, truncated, info = env.step(action)
+            done = terminated or truncated
+
+            agent.add_buffer(state, action, action_log_prob, next_state, reward, done)
+
+            total_reward += reward
+            state = next_state
+
+        agent.update_policy_value_net()
+
+        reward_history.append(total_reward)
+        recent_award = np.mean(reward_history[-100:])
+
+        if episode%100 == 0:
+            print(f'Episode : {episode}  Recent Award : {recent_award:.4f}')
+
+
+if __name__=='__main__':
+    agent = PpoAgent(
+        observation_size=env.observation_space.shape[0],
+        action_size=env.action_space.n,
+        n_steps=2048,
+        n_epochs=10,
+        batch_size=32,
+        lr=3e-4,
+        gae_lmda=0.95,
+        clip_ratio=0.2,
+        vf_coef=1.0,
+        entropy_coef=0.01
+    )
+
+    train_agent(agent, num_episodes=10000)
+
+

@@ -35,7 +35,7 @@ class Agent:
         self.optimizer = optim.Adam(params=self.policy_net.parameters(), lr=self.lr)
         self.memory = []
 
-    def get_action(self, state):
+    def get_action_log_prob(self, state):
         state = torch.as_tensor(state, dtype=torch.float32)
         logits = self.policy_net(state)
         dist = Categorical(logits=logits)
@@ -59,7 +59,7 @@ class Agent:
         self.memory.clear()
 
 
-def run_episodes(agent:Agent, num_spiodes):
+def train_agent(agent:Agent, num_spiodes):
     reward_history = []
 
     for episode in range(1, num_spiodes+1):
@@ -67,7 +67,7 @@ def run_episodes(agent:Agent, num_spiodes):
         total_reward = 0
 
         while True:
-            action, log_prob = agent.get_action(state)
+            action, log_prob = agent.get_action_log_prob(state)
             next_state, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
 
@@ -100,7 +100,7 @@ def render_agent(agent: Agent, num_episodes=1):
         total_reward = 0
 
         while True:
-            action, log_prob = agent.get_action(state)
+            action, log_prob = agent.get_action_log_prob(state)
             next_state, reward, terminated, truncated, info = tmp_env.step(action)
 
             done = terminated or truncated
@@ -121,5 +121,5 @@ if __name__=='__main__':
         action_size=env.action_space.n
     )
 
-    run_episodes(agent, num_spiodes=2000)
+    train_agent(agent, num_spiodes=2000)
     render_agent(agent, num_episodes=10)

@@ -153,7 +153,7 @@ def run_episodes(agent:DqnAgent, num_episodes):
 
         if (episode+1)%100 == 0:
             recent_avg_reward = np.mean(reward_per_episode[-100:])
-            print(f'Episode:{episode+1} Avg_Loss:{total_loss/step_cnt}  Recent_Avg_Reward:{recent_avg_reward}')
+            print(f'Episode:{episode+1} Avg_Loss:{total_loss/step_cnt:.4f}  Recent_Avg_Reward:{recent_avg_reward:.4f}')
 
 
 def render_agent(agent: DqnAgent, num_episodes=1):
