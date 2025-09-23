@@ -14,11 +14,15 @@ env = gym.make(
 
 
 class RolloutBuffer:
-    def __init__(self):
+    def __init__(self, buffer_size):
+        self.buffer_size = buffer_size
         self.buffer = []
 
     def __len__(self):
         return len(self.buffer)
+
+    def is_full(self):
+        return len(self.buffer) >= self.buffer_size
 
     def save(self, trajactory):
         self.buffer.append(trajactory)
@@ -80,7 +84,7 @@ class PpoAgent:
         self.vf_coef = vf_coef
         self.entropy_coef = entropy_coef
 
-        self.buffer = RolloutBuffer()
+        self.buffer = RolloutBuffer(buffer_size=n_steps)
 
         self.policy_net = PolicyNet(self.observation_size, self.action_size)
         self.optimizer_policy_net = optim.Adam(params=self.policy_net.parameters(), lr=self.lr)
@@ -107,10 +111,11 @@ class PpoAgent:
 
     def get_action_log_prob(self, state):
         state = torch.tensor(state, dtype=torch.float32)
-        logits = self.policy_net(state)
-        distribution = Categorical(logits=logits)
-        chosen_action = distribution.sample()
-        chosen_action_log_prob = distribution.log_prob(chosen_action)
+        with torch.no_grad():
+            logits = self.policy_net(state)
+            distribution = Categorical(logits=logits)
+            chosen_action = distribution.sample()
+            chosen_action_log_prob = distribution.log_prob(chosen_action)
         return chosen_action.detach().numpy(), chosen_action_log_prob
 
     def update_policy_value_net(self):
@@ -121,8 +126,7 @@ class PpoAgent:
             state_value = self.value_net(states)
             next_state_value = self.value_net(next_states)
 
-            # deltas   = {Rt + gamma*Vw(St+1)} - Vw(St)
-            # returns = Q(s, a) = Advantage + V(s)
+            # delta  = {Rt+gamma*Vw(St+1)} - Vw(St)
             deltas = rewards + (1-dones)*self.gamma*next_state_value - state_value
 
             advantages = torch.zeros_like(rewards)
@@ -132,7 +136,11 @@ class PpoAgent:
                 last_advantage = deltas[t] + (1-dones[t])*self.gamma*self.gae_lmda*last_advantage
                 advantages[t] += last_advantage
 
+            # return = Q(s,a) = Advantage + V(s)
             returns = advantages + state_value
+
+        returns = returns.squeeze(-1)
+        advantages = advantages.squeeze(-1)
 
         # PPO update
         dataset = TensorDataset(states, actions, old_action_log_probs, returns, advantages)
@@ -143,7 +151,7 @@ class PpoAgent:
                 states_, actions_, old_action_log_probs_, returns_, advantages_ = batch
 
                 # ValueNet Loss
-                pred_values = self.value_net(states_)
+                pred_values = self.value_net(states_).squeeze(-1)
                 value_loss = nn.functional.mse_loss(pred_values, returns_)
 
                 # PolciyNet Loss
@@ -171,32 +179,67 @@ class PpoAgent:
                 self.optimizer_policy_net.step()
 
 
-def train_agent(agent: PpoAgent, num_episodes):
-    reward_history = []
+def train_agent(agent: PpoAgent, num_steps):
+    episode_reward_history = []
+    episode_reward = 0.0
+    episode_count = 0
 
-    for episode in tqdm(range(1, num_episodes+1)):
+    state, info = env.reset()
+
+    for num_step in tqdm(range(1, num_steps+1)):
+        action, action_log_prob = agent.get_action_log_prob(state)
+        next_state, reward, terminated, truncated, info = env.step(action)
+        done = terminated or truncated
+
+        agent.add_buffer(state, action, action_log_prob, next_state, reward, done)
+
+        episode_reward += reward
+        state = next_state
+
+        if done:
+            episode_reward_history.append(episode_reward)
+            episode_reward = 0.0
+            episode_count += 1
+
+            state, info = env.reset()
+
+            recent_reward = np.mean(episode_reward_history[-100:])
+
+            if recent_reward>=250:
+                print('Early Stopped!!')
+                print(f'Episode: {episode_count}, Recent reward: {recent_reward:.4f}')
+                break
+
+            if episode_count%100==0:
+                print(f'Episode: {episode_count}, Recent reward: {recent_reward:.4f}')
+
+        if agent.buffer.is_full():
+            agent.update_policy_value_net()
+
+
+def render_agent(agent:PpoAgent, num_episodes):
+    render_env = gym.make(
+        id='LunarLander-v3',
+        render_mode='human'
+    )
+
+    for episode in range(1, num_episodes+1):
         state, info = env.reset()
-        done = False
-
         total_reward = 0.0
 
-        while not done:
-            action, action_log_prob = agent.get_action_log_prob(state)
+        while True:
+            action = agent.get_action_deterministic(state)
             next_state, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
-
-            agent.add_buffer(state, action, action_log_prob, next_state, reward, done)
-
             total_reward += reward
+
+            if done:
+                break
+
             state = next_state
 
-        agent.update_policy_value_net()
-
-        reward_history.append(total_reward)
-        recent_award = np.mean(reward_history[-100:])
-
-        if episode%100 == 0:
-            print(f'Episode : {episode}  Recent Award : {recent_award:.4f}')
+        print(f'Episode : {episode}  Total Reward : {total_reward:.4f}')
+    render_env.close()
 
 
 if __name__=='__main__':
@@ -205,14 +248,13 @@ if __name__=='__main__':
         action_size=env.action_space.n,
         n_steps=2048,
         n_epochs=10,
-        batch_size=32,
+        batch_size=64,
         lr=3e-4,
         gae_lmda=0.95,
         clip_ratio=0.2,
-        vf_coef=1.0,
+        vf_coef=0.7,
         entropy_coef=0.01
     )
 
-    train_agent(agent, num_episodes=10000)
-
-
+    train_agent(agent, num_steps=10000000)
+    render_agent(agent, num_episodes=20)

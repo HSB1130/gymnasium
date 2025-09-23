@@ -30,10 +30,6 @@ class RolloutBuffer:
 
         return states, action_log_probs, next_states, rewards, dones
 
-    @property
-    def size(self):
-        return len(self.buffer)
-
 
 class PolicyNet(nn.Module):
     def __init__(self, observation_size, action_size, hidden_size=64):

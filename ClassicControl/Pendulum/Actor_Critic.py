@@ -35,7 +35,6 @@ class PolicyNet(nn.Module):
         # log_std = torch.tanh(self.log_std_layer(h))
         # std = torch.exp(log_std)
 
-
         # Use SoftPlus
         std = nn.functional.softplus(self.log_std_layer(h)) + 1e-4
 

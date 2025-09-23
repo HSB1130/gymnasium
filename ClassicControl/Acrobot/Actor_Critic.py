@@ -104,9 +104,6 @@ class AcAgent:
         loss_value_net.backward()
         loss_policy_net.backward()
 
-        torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), max_norm=0.9)
-        torch.nn.utils.clip_grad_norm_(self.value_net.parameters(), max_norm=0.9)
-
         self.optimizer_value.step()
         self.optimizer_policy.step()
 
