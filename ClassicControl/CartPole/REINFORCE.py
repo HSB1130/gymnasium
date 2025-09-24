@@ -56,6 +56,7 @@ class Agent:
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
+
         self.memory.clear()
 
 

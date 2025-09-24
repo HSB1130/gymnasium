@@ -95,9 +95,10 @@ class PpoAgent:
     def add_buffer(self, state, action, action_log_prob, next_state, reward, done):
         state = torch.tensor(state, dtype=torch.float32)
         action = torch.tensor(action, dtype=torch.long)
+        action_log_prob = torch.tensor(action_log_prob, dtype=torch.float32)
         next_state = torch.tensor(next_state, dtype=torch.float32)
         reward = torch.tensor(reward, dtype=torch.float32)
-        done = torch.tensor(done, dtype=torch.long)
+        done = torch.tensor(done, dtype=torch.float32)
 
         trajactory = (state, action, action_log_prob, next_state, reward, done)
         self.buffer.save(trajactory)
@@ -116,31 +117,35 @@ class PpoAgent:
             distribution = Categorical(logits=logits)
             chosen_action = distribution.sample()
             chosen_action_log_prob = distribution.log_prob(chosen_action)
-        return chosen_action.detach().numpy(), chosen_action_log_prob
+        return chosen_action.detach().numpy(), chosen_action_log_prob.item()
 
     def update_policy_value_net(self):
         states, actions, old_action_log_probs, next_states, rewards, dones = self.buffer.sample()
 
         # GAE
         with torch.no_grad():
-            state_value = self.value_net(states)
-            next_state_value = self.value_net(next_states)
+            state_values = self.value_net(states)
+            next_state_values = self.value_net(next_states)
 
             # delta  = {Rt+gamma*Vw(St+1)} - Vw(St)
-            deltas = rewards + (1-dones)*self.gamma*next_state_value - state_value
+            deltas = rewards + (1-dones)*self.gamma*next_state_values - state_values
 
             advantages = torch.zeros_like(rewards)
             last_advantage = 0.0
 
+            # At = delta_t + lmda*gamma*At+1
             for t in reversed(range(len(rewards))):
                 last_advantage = deltas[t] + (1-dones[t])*self.gamma*self.gae_lmda*last_advantage
                 advantages[t] += last_advantage
 
             # return = Q(s,a) = Advantage + V(s)
-            returns = advantages + state_value
+            returns = advantages + state_values
 
-        returns = returns.squeeze(-1)
-        advantages = advantages.squeeze(-1)
+            advantages = advantages.squeeze(-1)
+            returns = returns.squeeze(-1)
+
+            # Advantage standardization (성능차이 큼)
+            advantages = (advantages - advantages.mean()) / (advantages.std(unbiased=False) + 1e-8)
 
         # PPO update
         dataset = TensorDataset(states, actions, old_action_log_probs, returns, advantages)
@@ -148,20 +153,20 @@ class PpoAgent:
 
         for epoch in range(1, self.n_epochs+1):
             for batch in dataloader:
-                states_, actions_, old_action_log_probs_, returns_, advantages_ = batch
+                states_b, actions_b, old_action_log_probs_b, returns_b, advantages_b = batch
 
                 # ValueNet Loss
-                pred_values = self.value_net(states_).squeeze(-1)
-                value_loss = nn.functional.mse_loss(pred_values, returns_)
+                pred_values = self.value_net(states_b).squeeze(-1)
+                value_loss = nn.functional.mse_loss(pred_values, returns_b)
 
                 # PolciyNet Loss
-                logits = self.policy_net(states_)
+                logits = self.policy_net(states_b)
                 distributions = Categorical(logits=logits)
-                chosen_action_log_probs = distributions.log_prob(actions_)
+                chosen_action_log_probs = distributions.log_prob(actions_b)
 
-                ratio = torch.exp(chosen_action_log_probs - old_action_log_probs_)
-                surrogate_1 = advantages_*ratio
-                surrogate_2 = advantages_*torch.clamp(ratio, 1-self.clip_ratio, 1+self.clip_ratio)
+                ratio = torch.exp(chosen_action_log_probs - old_action_log_probs_b)
+                surrogate_1 = advantages_b*ratio
+                surrogate_2 = advantages_b*torch.clamp(ratio, 1-self.clip_ratio, 1+self.clip_ratio)
                 policy_loss = -torch.min(surrogate_1, surrogate_2).mean()
 
                 # Entropy
@@ -198,20 +203,19 @@ def train_agent(agent: PpoAgent, num_steps):
 
         if done:
             episode_reward_history.append(episode_reward)
-            episode_reward = 0.0
+            recent_reward = np.mean(episode_reward_history[-100:])
             episode_count += 1
 
-            state, info = env.reset()
-
-            recent_reward = np.mean(episode_reward_history[-100:])
-
-            if recent_reward>=250:
+            if recent_reward>=255:
                 print('Early Stopped!!')
                 print(f'Episode: {episode_count}, Recent reward: {recent_reward:.4f}')
                 break
 
             if episode_count%100==0:
                 print(f'Episode: {episode_count}, Recent reward: {recent_reward:.4f}')
+
+            state, info = env.reset()
+            episode_reward = 0.0
 
         if agent.buffer.is_full():
             agent.update_policy_value_net()
@@ -223,13 +227,15 @@ def render_agent(agent:PpoAgent, num_episodes):
         render_mode='human'
     )
 
+    _ = str(input('Press ENTER to start rendering : '))
+
     for episode in range(1, num_episodes+1):
-        state, info = env.reset()
+        state, info = render_env.reset()
         total_reward = 0.0
 
         while True:
             action = agent.get_action_deterministic(state)
-            next_state, reward, terminated, truncated, info = env.step(action)
+            next_state, reward, terminated, truncated, info = render_env.step(action)
             done = terminated or truncated
             total_reward += reward
 
@@ -258,3 +264,4 @@ if __name__=='__main__':
 
     train_agent(agent, num_steps=10000000)
     render_agent(agent, num_episodes=20)
+    env.close()
