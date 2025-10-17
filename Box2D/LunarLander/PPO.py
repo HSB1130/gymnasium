@@ -206,7 +206,7 @@ def train_agent(agent: PpoAgent, num_steps):
             recent_reward = np.mean(episode_reward_history[-100:])
             episode_count += 1
 
-            if recent_reward>=255:
+            if recent_reward>=260:
                 print('Early Stopped!!')
                 print(f'Episode: {episode_count}, Recent reward: {recent_reward:.4f}')
                 break
