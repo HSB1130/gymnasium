@@ -62,7 +62,7 @@ class MonteCarloAgent:
             self.Q[key] += self.alpha*(G - self.Q[key])
 
 
-def run_episodes(agent:MonteCarloAgent, num_episodes:int):
+def train_agent(agent:MonteCarloAgent, num_episodes:int):
     for i in tqdm(range(num_episodes)):
         state, info = env.reset()
         agent.reset_memory()
@@ -127,7 +127,7 @@ def render_optimal_policy(optimal_policy, num_render=1):
 
 if __name__=='__main__':
     agent = MonteCarloAgent()
-    run_episodes(agent, num_episodes=100000)
+    train_agent(agent, num_episodes=100000)
 
     optimal_policy = get_optimal_policy(agent)
     render_optimal_policy(optimal_policy)

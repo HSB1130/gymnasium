@@ -43,7 +43,7 @@ class QLearningAgent:
         self.Q[(state, action)] += self.alpha * (target - self.Q[(state, action)])
 
 
-def run_episodes(agent:QLearningAgent, num_episodes):
+def train_agent(agent:QLearningAgent, num_episodes):
     for _ in tqdm(range(num_episodes)):
         state, info = env.reset()
 
@@ -104,7 +104,7 @@ def render_optimal_policy(optimal_policy:dict, num_render=1):
 
 if __name__=='__main__':
     agent = QLearningAgent(action_size=env.action_space.n)
-    run_episodes(agent, num_episodes=1000000)
+    train_agent(agent, num_episodes=1000000)
 
     optimal_policy = get_optimal_policy(agent)
     render_optimal_policy(optimal_policy)

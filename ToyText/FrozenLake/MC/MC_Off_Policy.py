@@ -70,7 +70,7 @@ class MonteCarloOffAgent:
             self.policy_b[visited_state] = self.get_greedy_policy(visited_state, epsilon=self.epsilon)
 
 
-def run_episodes(agent:MonteCarloOffAgent, num_episodes):
+def train_agent(agent:MonteCarloOffAgent, num_episodes):
     for i in tqdm(range(num_episodes)):
         state, info = env.reset()
         agent.reset_memory()
@@ -135,7 +135,7 @@ def render_optimal_policy(optimal_policy, num_render=1):
 
 if __name__=='__main__':
     agent = MonteCarloOffAgent()
-    run_episodes(agent, num_episodes=200000)
+    train_agent(agent, num_episodes=200000)
 
     optimal_policy = get_optimal_policy(agent)
     render_optimal_policy(optimal_policy)

@@ -115,7 +115,7 @@ class DqnAgent:
         return loss.item()
 
 
-def run_episodes(agent:DqnAgent, num_episodes):
+def train_agent(agent:DqnAgent, num_episodes):
     reward_per_episode = []
 
     for episode in range(num_episodes):
@@ -193,7 +193,7 @@ if __name__=='__main__':
         action_size=env.action_space.n
     )
 
-    run_episodes(agent, num_episodes=2000)
+    train_agent(agent, num_episodes=2000)
     render_agent(agent, num_episodes=10)
 
 

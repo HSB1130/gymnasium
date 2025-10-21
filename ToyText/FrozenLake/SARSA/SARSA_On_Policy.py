@@ -61,7 +61,7 @@ class SarsaAgent:
         self.policy[state] = self.get_greedy_policy(state, epsilon=self.epsiloin)
 
 
-def run_episodes(agent:SarsaAgent, num_episodes):
+def train_agent(agent:SarsaAgent, num_episodes):
     for _ in tqdm(range(num_episodes)):
         state, info = env.reset()
         agent.reset_memory()
@@ -124,7 +124,7 @@ def render_optimal_policy(optimal_policy:dict, num_render=1):
 
 if __name__=='__main__':
     agent = SarsaAgent()
-    run_episodes(agent, num_episodes=1000000)
+    train_agent(agent, num_episodes=1000000)
 
     optimal_policy = get_optimal_policy(agent)
     render_optimal_policy(optimal_policy)

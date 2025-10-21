@@ -80,7 +80,7 @@ class QLearningAgent:
         return loss.item()
 
 
-def run_episodes(agent:QLearningAgent, num_epidoes):
+def train_agent(agent:QLearningAgent, num_epidoes):
     reward_per_episode = []
     max_avg_reward = 0
 
@@ -152,6 +152,6 @@ def render_agent(agent: QLearningAgent, num_episodes=1):
 
 if __name__=='__main__':
     agent = QLearningAgent()
-    run_episodes(agent, num_epidoes=5000)
+    train_agent(agent, num_epidoes=5000)
     render_agent(agent, num_episodes=10)
 
