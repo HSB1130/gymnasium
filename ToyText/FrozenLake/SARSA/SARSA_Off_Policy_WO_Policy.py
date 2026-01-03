@@ -84,9 +84,11 @@ def train_agent(agent:SarsaOffAgent, num_episodes):
         while True:
             action = agent.get_action_from_Q(state)
             next_state, reward, terminated, truncated, info = env.step(action)
-            agent.update_Q(state, action, reward, terminated or truncated)
+            done = terminated or truncated
 
-            if terminated or truncated:
+            agent.update_Q(state, action, reward, done)
+
+            if done:
                 agent.update_Q(next_state, None, None, None)
                 break
 

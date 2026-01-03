@@ -1,7 +1,13 @@
 import torch
 import gymnasium as gym
-from DQN import DqnAgent
-from Actor_Critic import AcAgent
+from Actor_Critic import PolicyNet
+
+
+def get_action_from_policy_net(policy_net:PolicyNet, state):
+    state = torch.tensor(state, dtype=torch.float32)
+    logit = policy_net(state)
+    action = torch.argmax(logit).item()
+    return action
 
 
 def render_agent(num_episodes, model_state_dict_saved_path):
@@ -10,13 +16,9 @@ def render_agent(num_episodes, model_state_dict_saved_path):
         render_mode='human'
     )
 
-    agent = AcAgent(
-        observation_size=env.observation_space.shape[0],
-        action_size=env.action_space.n
-    )
-
+    policy_net = PolicyNet(env.observation_space.shape[0], env.action_space.n)
     state_dict = torch.load(model_state_dict_saved_path, map_location="cpu")
-    agent.policy_net.load_state_dict(state_dict)
+    policy_net.load_state_dict(state_dict)
 
     for episode in range(1, num_episodes+1):
         state, info = env.reset()
@@ -25,7 +27,7 @@ def render_agent(num_episodes, model_state_dict_saved_path):
         total_reward = 0.0
 
         while not done:
-            action = agent.get_action_by_deterministic(state)
+            action = get_action_from_policy_net(policy_net, state)
             next_state, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
 
@@ -35,6 +37,7 @@ def render_agent(num_episodes, model_state_dict_saved_path):
         print(f'Episode {episode}\'s total Reard : {total_reward:.4f}')
 
     env.close()
+
 
 if __name__=='__main__':
     model_state_dict_saved_path = './model/actor_critic_policy_net_state_dict_2025-09-16_11:19:26.pt'

@@ -49,6 +49,7 @@ class Agent:
 
     def update_PolicyNet(self):
         G, loss = 0.0, 0.0
+
         for reward, log_prob in reversed(self.memory):
             G = reward + self.gamma*G
             loss += -G*log_prob

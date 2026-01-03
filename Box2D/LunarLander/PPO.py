@@ -24,8 +24,8 @@ class RolloutBuffer:
     def is_full(self):
         return len(self.buffer) >= self.buffer_size
 
-    def save(self, trajactory):
-        self.buffer.append(trajactory)
+    def save(self, trajectory):
+        self.buffer.append(trajectory)
 
     def sample(self):
         states, actions, action_log_probs, next_states, rewards, dones = map(torch.stack, zip(*self.buffer))
@@ -48,7 +48,7 @@ class PolicyNet(nn.Module):
         )
 
     def forward(self, state):
-        return  self.FC(state)
+        return self.FC(state)
 
 
 class ValueNet(nn.Module):
@@ -84,7 +84,7 @@ class PpoAgent:
         self.vf_coef = vf_coef
         self.entropy_coef = entropy_coef
 
-        self.buffer = RolloutBuffer(buffer_size=n_steps)
+        self.rollout_buffer = RolloutBuffer(buffer_size=n_steps)
 
         self.policy_net = PolicyNet(self.observation_size, self.action_size)
         self.optimizer_policy_net = optim.Adam(params=self.policy_net.parameters(), lr=self.lr)
@@ -92,7 +92,10 @@ class PpoAgent:
         self.value_net = ValueNet(self.observation_size)
         self.optimizer_value_net = optim.Adam(params=self.value_net.parameters(), lr=self.lr)
 
-    def add_buffer(self, state, action, action_log_prob, next_state, reward, done):
+    def is_buffer_full(self):
+        return self.rollout_buffer.is_full()
+
+    def save_buffer(self, state, action, action_log_prob, next_state, reward, done):
         state = torch.tensor(state, dtype=torch.float32)
         action = torch.tensor(action, dtype=torch.long)
         action_log_prob = torch.tensor(action_log_prob, dtype=torch.float32)
@@ -101,7 +104,7 @@ class PpoAgent:
         done = torch.tensor(done, dtype=torch.float32)
 
         trajactory = (state, action, action_log_prob, next_state, reward, done)
-        self.buffer.save(trajactory)
+        self.rollout_buffer.save(trajactory)
 
     def get_action_deterministic(self, state):
         state = torch.tensor(state, dtype=torch.float32)
@@ -120,7 +123,7 @@ class PpoAgent:
         return chosen_action.detach().numpy(), chosen_action_log_prob.item()
 
     def update_policy_value_net(self):
-        states, actions, old_action_log_probs, next_states, rewards, dones = self.buffer.sample()
+        states, actions, old_action_log_probs, next_states, rewards, dones = self.rollout_buffer.sample()
 
         # GAE
         with torch.no_grad():
@@ -133,7 +136,7 @@ class PpoAgent:
             advantages = torch.zeros_like(rewards)
             last_advantage = 0.0
 
-            # At = delta_t + lmda*gamma*At+1
+            # A_t = delta_t + lmda*gamma*A_t+1
             for t in reversed(range(len(rewards))):
                 last_advantage = deltas[t] + (1-dones[t])*self.gamma*self.gae_lmda*last_advantage
                 advantages[t] += last_advantage
@@ -196,7 +199,7 @@ def train_agent(agent: PpoAgent, num_steps):
         next_state, reward, terminated, truncated, info = env.step(action)
         done = terminated or truncated
 
-        agent.add_buffer(state, action, action_log_prob, next_state, reward, done)
+        agent.save_buffer(state, action, action_log_prob, next_state, reward, done)
 
         episode_reward += reward
         state = next_state
@@ -208,16 +211,16 @@ def train_agent(agent: PpoAgent, num_steps):
 
             if recent_reward>=260:
                 print('Early Stopped!!')
-                print(f'Episode: {episode_count}, Recent reward: {recent_reward:.4f}')
+                print(f'Episode: {episode_count}, Recent reward: {recent_reward:.3f}')
                 break
 
             if episode_count%100==0:
-                print(f'Episode: {episode_count}, Recent reward: {recent_reward:.4f}')
+                print(f'Episode: {episode_count}, Recent reward: {recent_reward:.3f}')
 
             state, info = env.reset()
             episode_reward = 0.0
 
-        if agent.buffer.is_full():
+        if agent.is_buffer_full():
             agent.update_policy_value_net()
 
 
@@ -262,6 +265,6 @@ if __name__=='__main__':
         entropy_coef=0.01
     )
 
-    train_agent(agent, num_steps=10000000)
+    train_agent(agent, num_steps=2000000)
     render_agent(agent, num_episodes=20)
     env.close()

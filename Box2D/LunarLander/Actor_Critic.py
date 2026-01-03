@@ -139,19 +139,6 @@ def train_agent(agent: AcAgent, num_episodes):
             print(f'Episode : {episode}   Recent reward : {recent_reward:.4f}')
 
 
-def save_policy_net_params(agent: AcAgent):
-    is_save = str(input('Do you want to save this Policy Net parameters? [Yes/No] : '))
-    if is_save.strip().lower() == 'yes':
-        now = datetime.now()
-        datetime_str = now.strftime("%Y-%m-%d_%H:%M:%S")
-        state_dict_saved_path = f'./model/actor_critic_policy_net_state_dict_{datetime_str}.pt'
-
-        torch.save(agent.policy_net.state_dict(), state_dict_saved_path)
-        print('Model state dict saved!!')
-    else:
-        print('Model doesn\'t saved!!')
-
-
 def render_agent(agent: AcAgent, num_episodes):
     render_env = gym.make(
         id='LunarLander-v3',
@@ -178,7 +165,19 @@ def render_agent(agent: AcAgent, num_episodes):
         print(f'Episode : {episode}  Reward : {total_reward:.4f}')
 
     render_env.close()
-    save_policy_net_params(agent)
+
+
+def save_policy_net_params(agent: AcAgent):
+    is_save = str(input('Do you want to save this Policy Net parameters? [Yes/No] : '))
+    if is_save.strip().lower() == 'yes':
+        now = datetime.now()
+        datetime_str = now.strftime("%Y-%m-%d_%H:%M:%S")
+        state_dict_saved_path = f'./model/actor_critic_policy_net_state_dict_{datetime_str}.pt'
+
+        torch.save(agent.policy_net.state_dict(), state_dict_saved_path)
+        print('Model state dict saved!!')
+    else:
+        print('Model doesn\'t saved!!')
 
 
 if __name__=='__main__':
@@ -190,3 +189,4 @@ if __name__=='__main__':
 
     train_agent(agent, num_episodes=5000)
     render_agent(agent, num_episodes=10)
+    save_policy_net_params(agent)
