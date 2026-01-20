@@ -40,7 +40,7 @@ def render_agent(num_episodes, model_state_dict_saved_path):
 
 
 if __name__=='__main__':
-    model_state_dict_saved_path = './model/actor_critic_policy_net_state_dict_2025-09-16_11:19:26.pt'
+    model_state_dict_saved_path = '/Users/hsb/Desktop/gymnasium/Box2D/LunarLander/Discrete/model/actor_critic_policy_net_state_dict_2025-09-16_11:19:26.pt'
     render_agent(
         num_episodes=20,
         model_state_dict_saved_path=model_state_dict_saved_path

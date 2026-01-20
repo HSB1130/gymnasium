@@ -1,42 +1,43 @@
-from tqdm import tqdm
 import numpy as np
 import gymnasium as gym
+from tqdm import tqdm
 import torch
 from torch import nn, optim
-from torch.utils.data import TensorDataset, DataLoader
 from torch.distributions.normal import Normal
+from torch.utils.data import DataLoader, TensorDataset
 
 
 env = gym.make(
-    id='BipedalWalker-v3',
+    id="LunarLander-v3",
+    continuous=True,
     render_mode=None
 )
 
 
 class RolloutBuffer:
-    def __init__(self, buffer_size):
-        self.buffer_size = buffer_size
-        self.buffer = []
+    def __init__(self, max_len):
+        self.memory = []
+        self.max_len = max_len
 
     def __len__(self):
-        return len(self.buffer)
+        return len(self.memory)
 
     def is_full(self):
-        return len(self.buffer)>=self.buffer_size
+        return len(self.memory) >= self.max_len
 
-    def save(self, trajactory):
-        self.buffer.append(trajactory)
+    def save(self, trajectory):
+        self.memory.append(trajectory)
 
     def sample(self):
-        states, actions, raw_actions, raw_action_log_probs, next_states, rewards, dones = map(torch.stack, zip(*self.buffer))
+        states, actions, raw_actions, raw_action_log_probs, next_states, rewards, dones = map(torch.stack, zip(*self.memory))
         rewards = rewards.unsqueeze(dim=1)
         dones = dones.unsqueeze(dim=1)
-        self.buffer.clear()
+        self.memory.clear()
         return states, actions, raw_actions, raw_action_log_probs, next_states, rewards, dones
 
 
 class PolicyNet(nn.Module):
-    def __init__(self, observation_size, action_size, hidden_size=128):
+    def __init__(self, observation_size, action_size, hidden_size=64):
         super().__init__()
 
         self.FC = nn.Sequential(
@@ -45,19 +46,20 @@ class PolicyNet(nn.Module):
             nn.Linear(hidden_size, hidden_size),
             nn.Tanh(),
         )
-        self.avg_header = nn.Linear(hidden_size, action_size)
-        self.raw_std_header = nn.Linear(hidden_size, action_size)
+
+        self.avg_head = nn.Linear(hidden_size, action_size)
+        self.raw_std_head = nn.Linear(hidden_size, action_size)
 
     def forward(self, state):
-        h = self.FC(state)
-        avg = self.avg_header(h)
-        raw_std = self.raw_std_header(h)
+        hidden_state = self.FC(state)
+        avg = self.avg_head(hidden_state)
+        raw_std = self.raw_std_head(hidden_state)
         std = nn.functional.softplus(raw_std) + 1e-4
         return avg, std
 
 
 class ValueNet(nn.Module):
-    def __init__(self, observation_size, hidden_size=128):
+    def __init__(self, observation_size, hidden_size=64):
         super().__init__()
 
         self.FC = nn.Sequential(
@@ -69,33 +71,29 @@ class ValueNet(nn.Module):
         )
 
     def forward(self, state):
-       return self.FC(state)
+        return self.FC(state)
 
 
 class PpoAgent:
-    def __init__(self, observation_size, action_size, n_steps, n_epochs, batch_size, lr, gae_lmda, clip_ratio, vf_coef, entropy_coef):
-        self.observation_size = observation_size
-        self.action_size = action_size
+    def __init__(self, observation_size, action_size, gamma, lr, buffer_max_len, gae_lmda, n_epochs, batch_size, clip_ratio, vf_coef, entropy_coef):
+        self.gamma = gamma
+        self.lr = lr
+        self.gae_lmda = gae_lmda
 
-        self.n_steps = n_steps
         self.n_epochs = n_epochs
         self.batch_size = batch_size
 
-        self.gamma = 0.99
-        self.lr = lr
-
-        self.gae_lmda = gae_lmda
         self.clip_ratio = clip_ratio
         self.vf_coef = vf_coef
         self.entropy_coef = entropy_coef
 
-        self.buffer = RolloutBuffer(self.n_steps)
+        self.buffer = RolloutBuffer(buffer_max_len)
 
-        self.policy_net = PolicyNet(self.observation_size, self.action_size)
-        self.optimizer_policy = optim.Adam(params=self.policy_net.parameters(), lr=self.lr)
+        self.policy_net = PolicyNet(observation_size, action_size)
+        self.optim_policy_net = optim.Adam(params=self.policy_net.parameters(), lr=self.lr)
 
-        self.value_net = ValueNet(self.observation_size)
-        self.optimizer_value = optim.Adam(params=self.value_net.parameters(), lr=self.lr)
+        self.value_net = ValueNet(observation_size)
+        self.optim_value_net = optim.Adam(params=self.value_net.parameters(), lr=self.lr)
 
     def add_buffer(self, state, action, raw_action, raw_action_log_prob, next_state, reward, done):
         state = torch.tensor(state, dtype=torch.float32)
@@ -104,7 +102,7 @@ class PpoAgent:
         raw_action_log_prob = torch.tensor(raw_action_log_prob, dtype=torch.float32)
         next_state = torch.tensor(next_state, dtype=torch.float32)
         reward = torch.tensor(reward, dtype=torch.float32)
-        done = torch.tensor(done, dtype=torch.float32)
+        done = torch.tensor(done, dtype=torch.long)
 
         trajectory = (state, action, raw_action, raw_action_log_prob, next_state, reward, done)
         self.buffer.save(trajectory)
@@ -113,15 +111,15 @@ class PpoAgent:
         state = torch.tensor(state, dtype=torch.float32)
         with torch.no_grad():
             avg, std = self.policy_net(state)
-            action_tanh = torch.tanh(avg)
-        return action_tanh.detach().numpy()
+            action = torch.tanh(avg)
+        return action.detach().numpy()
 
     def get_action_log_prob(self, state):
         state = torch.tensor(state, dtype=torch.float32)
 
         with torch.no_grad():
             avg, std = self.policy_net(state)
-            distribution = Normal(avg, std)
+            distribution = Normal(loc=avg, scale=std)
 
             chosen_raw_action = distribution.sample()
             chosen_raw_action_log_prob = distribution.log_prob(chosen_raw_action).sum(dim=-1)
@@ -134,64 +132,60 @@ class PpoAgent:
 
         # GAE
         with torch.no_grad():
-            state_values = self.value_net(states)
+            pred_state_values = self.value_net(states)
             next_state_values = self.value_net(next_states)
 
-            # delta  = {Rt+gamma*Vw(St+1)} - Vw(St)
-            deltas = rewards + (1-dones)*self.gamma*next_state_values - state_values
+            deltas = rewards + (1-dones)*self.gamma*(next_state_values) - pred_state_values
 
             advantages = torch.zeros_like(rewards)
             last_advantage = 0.0
 
-            # At = delta_t + lmda*gamma*At+1
-            for t in reversed(range(len(rewards))):
-                last_advantage = deltas[t] + (1-dones[t])*self.gae_lmda*self.gamma*last_advantage
-                advantages[t] = last_advantage
+            for t in reversed(range(len(states))):
+                advantages[t] = (1-dones[t])*self.gae_lmda*self.gamma*last_advantage + deltas[t]
+                last_advantage = advantages[t]
 
-            returns = advantages + state_values
+            returns = advantages + pred_state_values
 
-            advantages = advantages.squeeze(-1)
-            returns = returns.squeeze(-1)
+            advantages = advantages.squeeze(dim=-1)
+            returns =returns.squeeze(dim=-1)
 
-            # Advantage standardization (성능차이 큼)
             advantages = (advantages - advantages.mean()) / (advantages.std(unbiased=False) + 1e-8)
 
-        # PPO Update
-        dataset = TensorDataset(states, raw_actions, raw_action_log_probs, advantages, returns)
-        dataloader = DataLoader(dataset=dataset, batch_size=self.batch_size, shuffle=True, drop_last=False)
+        dataset = TensorDataset(states, raw_actions, raw_action_log_probs, returns, advantages)
+        dataloader = DataLoader(dataset, self.batch_size, shuffle=True, drop_last=False)
 
         for epoch in range(1, self.n_epochs+1):
             for batch in dataloader:
-                states, raw_actions, raw_action_log_probs, advantages, returns = batch
+                states, raw_actions, raw_action_log_probs, returns, advantages = batch
 
                 # Policy Loss
                 avgs, stds = self.policy_net(states)
                 distributions = Normal(avgs, stds)
-                current_new_raw_action_log_probs = distributions.log_prob(raw_actions).sum(dim=-1)
+                current_raw_action_log_probs = distributions.log_prob(raw_actions).sum(dim=-1)
 
-                ratio = torch.exp(current_new_raw_action_log_probs - raw_action_log_probs)
-                surrogate_1 = ratio * advantages
-                surrogate_2 = torch.clamp(ratio, 1-self.clip_ratio, 1+self.clip_ratio) * advantages
-                loss_policy = -torch.min(surrogate_1, surrogate_2).mean()
+                ratio = torch.exp(current_raw_action_log_probs - raw_action_log_probs)
+                surrogate_1 = ratio*advantages
+                surroaget_2 = torch.clamp(ratio, 1-self.clip_ratio, 1+self.clip_ratio)*advantages
+                loss_policy = -torch.min(surrogate_1, surroaget_2).mean()
 
                 # Value Loss
                 pred_state_values = self.value_net(states).squeeze(-1)
-                loss_value = nn.functional.mse_loss(pred_state_values, returns)
+                loss_value = nn.functional.mse_loss(returns, pred_state_values)
 
-                # Enropy
+                # Entropy Loss
                 entropy = distributions.entropy().sum(dim=-1).mean()
 
                 # Total Loss
                 total_loss = loss_policy + self.vf_coef*loss_value - self.entropy_coef*entropy
 
                 # Update Network
-                self.optimizer_value.zero_grad()
-                self.optimizer_policy.zero_grad()
+                self.optim_policy_net.zero_grad()
+                self.optim_value_net.zero_grad()
 
                 total_loss.backward()
 
-                self.optimizer_value.step()
-                self.optimizer_policy.step()
+                self.optim_policy_net.step()
+                self.optim_value_net.step()
 
 
 def train_agent(agent:PpoAgent, num_steps):
@@ -234,7 +228,8 @@ def train_agent(agent:PpoAgent, num_steps):
 
 def render_agent(agent:PpoAgent, num_episodes=10):
     render_env = gym.make(
-        id='BipedalWalker-v3',
+        id="LunarLander-v3",
+        continuous=True,
         render_mode='human'
     )
 
@@ -263,15 +258,17 @@ if __name__=='__main__':
     agent = PpoAgent(
         observation_size=env.observation_space.shape[0],
         action_size=env.action_space.shape[0],
-        n_steps=2048,
-        n_epochs=10,
-        batch_size=64,
+        gamma=0.99,
         lr=3e-4,
+        buffer_max_len=2048,
         gae_lmda=0.95,
+        n_epochs=10,
+        batch_size=128,
         clip_ratio=0.2,
         vf_coef=0.5,
-        entropy_coef=0.003
+        entropy_coef=0.005
     )
 
     train_agent(agent, num_steps=10000000)
     render_agent(agent, num_episodes=20)
+

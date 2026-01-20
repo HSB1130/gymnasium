@@ -1,6 +1,6 @@
-from tqdm import tqdm
 import numpy as np
 import gymnasium as gym
+from tqdm import tqdm
 import torch
 from torch import nn, optim
 from torch.distributions.normal import Normal
@@ -27,13 +27,13 @@ class PolicyNet(nn.Module):
         )
 
         self.avg_header = nn.Linear(hidden_dim, action_dim)
-        self.log_std_header = nn.Linear(hidden_dim, action_dim)
+        self.raw_std_header = nn.Linear(hidden_dim, action_dim)
 
     def forward(self, state):
         h = self.FC(state)
         avg = self.avg_header(h)
-        log_std = self.log_std_header(h)
-        std = nn.functional.softplus(log_std)
+        raw_std = self.raw_std_header(h)
+        std = nn.functional.softplus(raw_std) + 1e-4
         return avg, std
 
 
@@ -70,19 +70,15 @@ class RolloutBuffer:
         self.buffer.append(trajectory)
 
     def sample(self):
-        states, actions, action_log_probs, next_states, rewards, dones = map(torch.stack, zip(*self.buffer))
+        states, actions, raw_actions, raw_action_log_probs, next_states, rewards, dones = map(torch.stack, zip(*self.buffer))
         rewards = rewards.unsqueeze(dim=1)
         dones = dones.unsqueeze(dim=1)
         self.buffer.clear()
-        return states, actions, action_log_probs, next_states, rewards, dones
+        return states, actions, raw_actions, raw_action_log_probs, next_states, rewards, dones
 
 
 class PpoAgent:
     def __init__(self, observation_dim, action_dim, hidden_dim, gamma, lr, buffer_size, n_epoch, batch_size, gae_lmda, clip_ratio, vf_coef, entropy_coef):
-        self.observation_dim = observation_dim
-        self.action_dim = action_dim
-        self.hidden_dim = hidden_dim
-
         self.gamma = gamma
         self.lr = lr
 
@@ -103,15 +99,16 @@ class PpoAgent:
         self.value_net = ValueNet(observation_dim, hidden_dim)
         self.value_optimizer = optim.Adam(params=self.value_net.parameters(), lr=self.lr)
 
-    def save_buffer(self, state, action, action_log_prob, next_state, reward, done):
+    def save_buffer(self, state, action, raw_action, raw_action_log_prob, next_state, reward, done):
         state = torch.tensor(state, dtype=torch.float32)
         action = torch.tensor(action, dtype=torch.float32)
-        action_log_prob = torch.tensor(action_log_prob, dtype=torch.float32)
+        raw_action = torch.tensor(raw_action, dtype=torch.float32)
+        raw_action_log_prob = torch.tensor(raw_action_log_prob, dtype=torch.float32)
         next_state = torch.tensor(next_state, dtype=torch.float32)
         reward = torch.tensor(reward, dtype=torch.float32)
         done = torch.tensor(done, dtype=torch.float32)
 
-        trajectory = (state, action, action_log_prob, next_state, reward, done)
+        trajectory = (state, action, raw_action, raw_action_log_prob, next_state, reward, done)
         self.buffer.save(trajectory)
 
     def get_action_log_prob(self, state):
@@ -121,13 +118,11 @@ class PpoAgent:
             avg, std = self.policy_net(state)
             distribution = Normal(avg, std)
 
-            action = distribution.sample()
-            action_tanh = torch.tanh(action)
+            chosen_raw_action = distribution.sample()
+            chosen_raw_action_log_prob = distribution.log_prob(chosen_raw_action).sum(dim=-1)
+            chosen_action = torch.tanh(chosen_raw_action)
 
-            action_log_prob = distribution.log_prob(action).sum(dim=-1)
-            action_log_prob -= torch.log(1 - action_tanh.pow(2) + 1e-6).sum(dim=-1)
-
-        return action_tanh.detach().numpy(), action_log_prob.item()
+        return chosen_action.detach().numpy(), chosen_raw_action.detach().numpy(), chosen_raw_action_log_prob.item()
 
     def get_action_deterministic(self, state):
         state = torch.tensor(state, dtype=torch.float32)
@@ -137,7 +132,7 @@ class PpoAgent:
         return action.detach().numpy()
 
     def update_policy_value_net(self):
-        states, actions, action_log_probs, next_states, rewards, dones = self.buffer.sample()
+        states, actions, raw_actions, raw_action_log_probs, next_states, rewards, dones = self.buffer.sample()
 
         # GAE
         with torch.no_grad():
@@ -160,32 +155,26 @@ class PpoAgent:
 
             advantages = (advantages - advantages.mean()) / (advantages.std(unbiased=False) + 1e-8)
 
-        dataset = TensorDataset(states, actions, action_log_probs, advantages, returns)
+        dataset = TensorDataset(states, raw_actions, raw_action_log_probs, advantages, returns)
         dataloader = DataLoader(dataset=dataset, batch_size=self.batch_size, shuffle=True, drop_last=True)
 
         for epoch in range(1, self.n_epoch+1):
             for batch in dataloader:
-                states_b, actions_b, old_action_log_probs_b, advantages_b, returns_b = batch
-
-                # Value Loss
-                state_values = self.value_net(states_b).squeeze(-1)
-                loss_value = nn.functional.mse_loss(state_values, returns_b)
+                states, raw_actions, raw_action_log_probs, advantages, returns = batch
 
                 # Policy Loss
-                avgs, stds = self.policy_net(states_b)
+                avgs, stds = self.policy_net(states)
                 distributions = Normal(avgs, stds)
+                current_raw_action_log_probs = distributions.log_prob(raw_actions).sum(dim=-1)
 
-                eps = 1e-6
-                actions_b = actions_b.clamp(-1+eps, 1-eps)
-                z = torch.atanh(actions_b)
-
-                chosen_action_log_probs = distributions.log_prob(z).sum(dim=-1)
-                chosen_action_log_probs -= torch.log(1-actions_b.pow(2) + eps).sum(dim=-1)
-
-                ratio = torch.exp(chosen_action_log_probs - old_action_log_probs_b)
-                surrogate_1 = advantages_b * ratio
-                surrogate_2 = advantages_b * torch.clamp(ratio, 1-self.clip_ratio, 1+self.clip_ratio)
+                ratio = torch.exp(current_raw_action_log_probs - raw_action_log_probs)
+                surrogate_1 =  ratio * advantages
+                surrogate_2 = torch.clamp(ratio, 1-self.clip_ratio, 1+self.clip_ratio) * advantages
                 loss_policy = -torch.min(surrogate_1, surrogate_2).mean()
+
+                # Value Loss
+                state_values = self.value_net(states).squeeze(-1)
+                loss_value = nn.functional.mse_loss(state_values, returns)
 
                 # Enropy
                 entropy = distributions.entropy().sum(dim=-1).mean()
@@ -211,11 +200,11 @@ def train_agent(agent: PpoAgent, num_steps):
     state, info = env.reset()
 
     for step in tqdm(range(1, num_steps+1)):
-        action, action_log_prob = agent.get_action_log_prob(state)
+        action, raw_action, raw_action_log_prob = agent.get_action_log_prob(state)
         next_state, reward, terminated, truncated, info = env.step(action)
         done = terminated or truncated
 
-        agent.save_buffer(state, action, action_log_prob, next_state, reward, done)
+        agent.save_buffer(state, action, raw_action, raw_action_log_prob, next_state, reward, done)
 
         episode_reward += reward
         state = next_state
@@ -227,7 +216,7 @@ def train_agent(agent: PpoAgent, num_steps):
 
             recent_reward = np.mean(episode_reward_history[-100:])
 
-            if recent_reward>=80:
+            if recent_reward>=100:
                 print('Early Stopped!!')
                 print(f'Episode : {episode_cnt}  Recent reward : {recent_reward:.4f}')
                 break
@@ -241,12 +230,13 @@ def train_agent(agent: PpoAgent, num_steps):
             agent.update_policy_value_net()
 
 
-
 def render_agent(agent: PpoAgent, num_episodes):
     render_env = gym.make(
         id='Swimmer-v5',
         render_mode='human'
     )
+
+    _ = str(input('Press ENTER to start rendering : '))
 
     for episode in range(1, num_episodes+1):
         state, info = render_env.reset()
@@ -273,9 +263,9 @@ if __name__=='__main__':
         hidden_dim=64,
         gamma=0.999,
         lr=3e-4,
-        buffer_size=2048,
+        buffer_size=4096,
         n_epoch=10,
-        batch_size=64,
+        batch_size=128,
         gae_lmda=0.95,
         clip_ratio=0.2,
         vf_coef=0.5,
@@ -284,7 +274,7 @@ if __name__=='__main__':
 
     train_agent(
         agent,
-        num_steps=10000000
+        num_steps=100000000
     )
 
     render_agent(

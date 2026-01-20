@@ -41,7 +41,7 @@ def render_agent(num_episodes, model_state_dict_saved_path):
     env.close()
 
 if __name__=='__main__':
-    model_state_dict_saved_path = './model/ppo_policy_net_state_dict_2026-01-04_05:25:09.pt'
+    model_state_dict_saved_path = '/Users/hsb/Desktop/gymnasium/Box2D/CarRacing/model/ppo_policy_net_state_dict_2026-01-04_05:25:09.pt'
 
     render_agent(
         num_episodes=20,

@@ -24,19 +24,19 @@ class PolicyNet(nn.Module):
         )
 
         self.avg_layer = nn.Linear(hidden_size, action_size)
-        self.log_std_layer = nn.Linear(hidden_size, action_size)
+        self.raw_std_layer = nn.Linear(hidden_size, action_size)
 
     def forward(self, state):
         h = self.FC(state)
-
         avg = self.avg_layer(h)
 
         # # Use tanh+exp
-        # log_std = torch.tanh(self.log_std_layer(h))
+        # log_std = torch.tanh(self.raw_std_layer(h))
         # std = torch.exp(log_std)
 
         # Use SoftPlus
-        std = nn.functional.softplus(self.log_std_layer(h)) + 1e-4
+        raw_std = self.raw_std_layer(h)
+        std = nn.functional.softplus(raw_std) + 1e-4
 
         return avg, std
 
