@@ -48,7 +48,8 @@ class PolicyNet(nn.Module):
         )
 
     def forward(self, state):
-        return self.FC(state)
+        action_logit = self.FC(state)
+        return action_logit
 
 
 class ValueNet(nn.Module):
@@ -64,7 +65,8 @@ class ValueNet(nn.Module):
         )
 
     def forward(self, state):
-       return self.FC(state)
+        state_value = self.FC(state)
+        return state_value
 
 
 class PpoAgent:
@@ -109,15 +111,15 @@ class PpoAgent:
     def get_action_deterministic(self, state):
         state = torch.tensor(state, dtype=torch.float32)
         with torch.no_grad():
-            logits = self.policy_net(state)
-        max_prob_action = torch.argmax(logits)
+            action_logit = self.policy_net(state)
+        max_prob_action = torch.argmax(action_logit)
         return max_prob_action.detach().numpy()
 
     def get_action_log_prob(self, state):
         state = torch.tensor(state, dtype=torch.float32)
         with torch.no_grad():
-            logits = self.policy_net(state)
-            distribution = Categorical(logits=logits)
+            action_logit = self.policy_net(state)
+            distribution = Categorical(logits=action_logit)
             chosen_action = distribution.sample()
             chosen_action_log_prob = distribution.log_prob(chosen_action)
         return chosen_action.detach().numpy(), chosen_action_log_prob.item()
@@ -158,14 +160,14 @@ class PpoAgent:
             for batch in dataloader:
                 states_b, actions_b, old_action_log_probs_b, returns_b, advantages_b = batch
 
-                # ValueNet Loss
-                pred_values = self.value_net(states_b).squeeze(-1)
-                value_loss = nn.functional.mse_loss(pred_values, returns_b)
-
                 # PolciyNet Loss
                 logits = self.policy_net(states_b)
                 distributions = Categorical(logits=logits)
                 chosen_action_log_probs = distributions.log_prob(actions_b)
+
+                # ValueNet Loss
+                pred_values = self.value_net(states_b).squeeze(-1)
+                value_loss = nn.functional.mse_loss(pred_values, returns_b)
 
                 ratio = torch.exp(chosen_action_log_probs - old_action_log_probs_b)
                 surrogate_1 = advantages_b*ratio
